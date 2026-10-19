@@ -1,0 +1,72 @@
+name: Build APK
+
+# Läuft automatisch, sobald du eine ZIP-Datei ins Repository hochlädst.
+on:
+  push:
+    paths:
+      - '**.zip'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Quelle finden (neueste ZIP oder Repo-Inhalt)
+        id: src
+        run: |
+          set -e
+          best=""; bestt=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            t=$(git log -1 --format=%ct -- "$f")
+            if [ "$t" -ge "$bestt" ]; then bestt=$t; best=$f; fi
+          done < <(git ls-files '*.zip')
+
+          if [ -n "$best" ]; then
+            echo "Verwende ZIP: $best"
+            mkdir -p "$RUNNER_TEMP/src"
+            unzip -q -o "$best" -d "$RUNNER_TEMP/src"
+            pj=$(find "$RUNNER_TEMP/src" -maxdepth 3 -name package.json -not -path '*/node_modules/*' | head -1)
+            [ -z "$pj" ] && { echo "::error::In der ZIP wurde keine package.json gefunden."; exit 1; }
+            echo "dir=$(dirname "$pj")" >> "$GITHUB_OUTPUT"
+          elif [ -f package.json ]; then
+            echo "Keine ZIP gefunden – verwende Repo-Inhalt."
+            echo "dir=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Keine ZIP und keine package.json im Repository."; exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: APK bauen
+        id: build
+        working-directory: ${{ steps.src.outputs.dir }}
+        run: bash tools/build.sh ${{ github.run_number }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NutriSnap-APK
+          path: ${{ steps.src.outputs.dir }}/NutriSnap-${{ github.run_number }}.apk
+
+      - name: Release mit APK veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: NutriSnap Build ${{ github.run_number }}
+          body: Direkt-Download der APK. Health Connect ${{ steps.build.outputs.health == '1' && 'ist enthalten.' || 'ist in diesem Build NICHT enthalten (Fallback).' }}
+          files: ${{ steps.src.outputs.dir }}/NutriSnap-${{ github.run_number }}.apk
