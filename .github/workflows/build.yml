@@ -1,0 +1,59 @@
+name: APK bauen
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['*.zip', '.github/workflows/build.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Quelle finden (neueste ZIP im Repo-Hauptordner)
+        id: src
+        run: |
+          set -e
+          ZIP=$(ls -t *.zip 2>/dev/null | head -n1 || true)
+          if [ -z "$ZIP" ]; then echo "Keine ZIP im Repo gefunden."; exit 1; fi
+          echo "Verwende ZIP: $ZIP"
+          rm -rf work && mkdir work
+          unzip -q "$ZIP" -d work
+          SETTINGS=$(find work -maxdepth 3 -name settings.gradle | head -n1)
+          if [ -z "$SETTINGS" ]; then echo "In der ZIP wurde keine settings.gradle gefunden."; exit 1; fi
+          echo "dir=$(dirname "$SETTINGS")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: APK bauen
+        working-directory: ${{ steps.src.outputs.dir }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: APK bereitstellen
+        run: |
+          mkdir -p out
+          cp "$(find ${{ steps.src.outputs.dir }} -name '*.apk' -path '*outputs*' | head -n1)" out/APEX1.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: APEX1-apk
+          path: out/APEX1.apk
+
+      - name: Release mit APK veröffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: APEX/1 Build ${{ github.run_number }}
+          files: out/APEX1.apk
